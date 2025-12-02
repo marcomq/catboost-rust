@@ -31,7 +31,7 @@ impl Model {
     }
 
     /// Load a model from a buffer
-    pub fn load_buffer<P: AsRef<Vec<u8>>>(buffer: P) -> CatBoostResult<Self> {
+    pub fn load_buffer<P: AsRef<[u8]>>(buffer: P) -> CatBoostResult<Self> {
         let model = Model::new();
         CatBoostError::check_return_value(unsafe {
             sys::LoadFullModelFromBuffer(

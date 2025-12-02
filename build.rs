@@ -78,6 +78,27 @@ fn get_platform_info() -> (String, String) {
     (os.to_string(), arch.to_string())
 }
 
+fn verify_checksum(data: &[u8], expected_checksum: &str) -> bool {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let hash = hasher.finalize();
+    let hex_hash = format!("{:x}", hash);
+    hex_hash == expected_checksum
+}
+
+fn get_cache_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let out_dir = PathBuf::from(env::var("OUT_DIR")?);
+    let target_dir = out_dir
+        .ancestors()
+        .find(|p| p.ends_with("target"))
+        .ok_or("Could not find target directory")?;
+    let cache_dir = target_dir.join("catboost-cache");
+    if !cache_dir.exists() {
+        fs::create_dir_all(&cache_dir)?;
+    }
+    Ok(cache_dir)
+}
+
 fn download_and_verify(
     file_info: &FileInfo,
     destination_path: &Path,
@@ -96,15 +117,12 @@ fn download_and_verify(
     let mut bytes = Vec::new();
     response.into_reader().read_to_end(&mut bytes)?;
 
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let hash = hasher.finalize();
-    let hex_hash = format!("{:x}", hash);
-
-    if hex_hash != file_info.checksum {
+    if !verify_checksum(&bytes, file_info.checksum) {
         return Err(format!(
             "Checksum mismatch for {}. Expected: {}, Got: {}",
-            file_info.url, file_info.checksum, hex_hash
+            file_info.url,
+            file_info.checksum,
+            format!("{:x}", Sha256::digest(&bytes))
         )
         .into());
     }
@@ -118,11 +136,23 @@ fn download_and_verify(
     Ok(())
 }
 
-fn download_model_interface_headers(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let model_interface_dir = out_dir.join("libs/model_interface");
-    fs::create_dir_all(&model_interface_dir)?;
-    let c_api_path = model_interface_dir.join("c_api.h");
-    download_and_verify(&c_api_header(), &c_api_path)
+fn fetch_file_to_cache(
+    file_info: &FileInfo,
+    cache_dir: &Path,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let filename = Path::new(&file_info.url).file_name().ok_or("Could not get filename from URL")?;
+    let cached_path = cache_dir.join(filename);
+
+    if cached_path.exists() {
+        let existing_bytes = fs::read(&cached_path)?;
+        if verify_checksum(&existing_bytes, file_info.checksum) {
+            println!("cargo:info=Using cached file: {}", cached_path.display());
+            return Ok(cached_path);
+        }
+    }
+
+    download_and_verify(file_info, &cached_path)?;
+    Ok(cached_path)
 }
 
 fn download_compiled_library(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -130,16 +160,42 @@ fn download_compiled_library(out_dir: &Path) -> Result<(), Box<dyn std::error::E
     let lib_dir = out_dir.join("libs");
     fs::create_dir_all(&lib_dir)?;
 
+    let cache_dir = get_cache_dir()?;
+
     match (os.as_str(), arch.as_str()) {
-        ("linux", "x86_64") => download_and_verify(&lib_linux_x86_64(), &lib_dir.join("libcatboostmodel.so")),
-        ("linux", "aarch64") => download_and_verify(&lib_linux_aarch64(), &lib_dir.join("libcatboostmodel.so")),
-        ("darwin", "x86_64") | ("darwin", "aarch64") => download_and_verify(&lib_darwin_universal(), &lib_dir.join("libcatboostmodel.dylib")),
-        ("windows", "x86_64") => {
-            download_and_verify(&lib_windows_dll(), &lib_dir.join("catboostmodel.dll"))?;
-            download_and_verify(&lib_windows_lib(), &lib_dir.join("catboostmodel.lib"))
+        ("linux", "x86_64") => {
+            let cached_path = fetch_file_to_cache(&lib_linux_x86_64(), &cache_dir)?;
+            fs::copy(cached_path, lib_dir.join("libcatboostmodel.so"))?;
         }
-        _ => Err(format!("Unsupported platform: {}-{}", os, arch).into()),
+        ("linux", "aarch64") => {
+            let cached_path = fetch_file_to_cache(&lib_linux_aarch64(), &cache_dir)?;
+            fs::copy(cached_path, lib_dir.join("libcatboostmodel.so"))?;
+        }
+        ("darwin", "x86_64") | ("darwin", "aarch64") => {
+            let lib_path = lib_dir.join("libcatboostmodel.dylib");
+            let cached_path = fetch_file_to_cache(&lib_darwin_universal(), &cache_dir)?;
+            fs::copy(cached_path, &lib_path)?;
+
+            // Modify the copy in OUT_DIR, not the cached original
+            let status = std::process::Command::new("install_name_tool")
+                .arg("-id")
+                .arg("@loader_path/libcatboostmodel.dylib")
+                .arg(&lib_path)
+                .status()?;
+            if !status.success() {
+                return Err("install_name_tool failed".into());
+            }
+        }
+        ("windows", "x86_64") => {
+            let cached_dll = fetch_file_to_cache(&lib_windows_dll(), &cache_dir)?;
+            fs::copy(cached_dll, lib_dir.join("catboostmodel.dll"))?;
+
+            let cached_lib = fetch_file_to_cache(&lib_windows_lib(), &cache_dir)?;
+            fs::copy(cached_lib, lib_dir.join("catboostmodel.lib"))?;
+        }
+        _ => return Err(format!("Unsupported platform: {}-{}", os, arch).into()),
     }
+    Ok(())
 }
 
 fn run_checksum_updater() -> Result<(), Box<dyn std::error::Error>> {
@@ -203,10 +259,14 @@ fn main() {
     println!("cargo:rustc-cfg=catboost_text_count");
 
     // Download the model interface headers
-    if let Err(e) = download_model_interface_headers(&out_dir) {
-        eprintln!("Failed to download model interface headers: {}", e);
-        panic!("Cannot proceed without headers");
-    }
+    let cache_dir = get_cache_dir().expect("Failed to get cache directory");
+    let cached_header_path: PathBuf =
+        fetch_file_to_cache(&c_api_header(), &cache_dir).expect("Failed to fetch c_api.h");
+
+    let model_interface_dir = out_dir.join("libs/model_interface");
+    fs::create_dir_all(&model_interface_dir).expect("Failed to create model_interface dir");
+    fs::copy(cached_header_path, model_interface_dir.join("c_api.h"))
+        .expect("Failed to copy c_api.h");
 
     // Download the compiled library
     if let Err(e) = download_compiled_library(&out_dir) {
@@ -250,20 +310,7 @@ fn main() {
 
     // On macOS/Linux, change the install name/soname to use @loader_path/$ORIGIN
     // This needs to be done on the source library in OUT_DIR before linking
-    if os == "darwin" {
-        use std::process::Command;
-        let _ = Command::new("install_name_tool")
-            .arg("-id")
-            .arg(format!("@loader_path/{}", lib_filename))
-            .arg(&lib_source_path)
-            .status();
-        // Also update the copy
-        let _ = Command::new("install_name_tool")
-            .arg("-id")
-            .arg(format!("@loader_path/{}", lib_filename))
-            .arg(&lib_dest_path)
-            .status();
-    } else if os == "linux" {
+    if os == "linux" {
         use std::process::Command;
         // Use patchelf to set soname to just the library filename on Linux (if available)
         // This is optional - if patchelf is not installed, we just skip it
