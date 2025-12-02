@@ -322,7 +322,7 @@ impl Model {
         Ok(names)
     }
 
-    /// Get names of specific type of features used in model, 
+    /// Get names of specific type of features used in model,
     /// returns error if index out of bounds
     fn get_specific_feature_names(
         &self,

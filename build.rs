@@ -1,12 +1,55 @@
 extern crate bindgen;
 
+use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
-fn get_catboost_version() -> String {
-    env::var("CATBOOST_VERSION").unwrap_or_else(|_| "1.2.8".to_string())
+const CATBOOST_VERSION: &str = "1.2.8"; // The single source of truth for the version
+
+struct FileInfo {
+    url: String,
+    checksum: &'static str,
+}
+
+// Query all checksums for all platforms by running CATBOOST_UPDATE_CHECKSUMS=1 cargo build   
+
+fn c_api_header() -> FileInfo {
+    FileInfo {
+        url: format!("https://raw.githubusercontent.com/catboost/catboost/v{CATBOOST_VERSION}/catboost/libs/model_interface/c_api.h"),
+        checksum: "ecc734868dcd485e2fa7434287ad1fe418a7e3be606ff16ce46a403fb0a7912a", // Verified for v1.2.8
+    }
+}
+
+fn lib_linux_x86_64() -> FileInfo {
+    FileInfo {
+        url: format!("https://github.com/catboost/catboost/releases/download/v{CATBOOST_VERSION}/libcatboostmodel-linux-x86_64-{CATBOOST_VERSION}.so"),
+        checksum: "5a0de49d0bc81e460fd983da0f0f9d819e804b4ae19c6c9451b31e4f57d06545",
+    }
+}
+fn lib_linux_aarch64() -> FileInfo {
+    FileInfo {
+        url: format!("https://github.com/catboost/catboost/releases/download/v{CATBOOST_VERSION}/libcatboostmodel-linux-aarch64-{CATBOOST_VERSION}.so"),
+        checksum: "0f5f55286b805c30b719bd52fdf661dc94a694207ae1914facbd5018e09349f3",
+    }
+}
+fn lib_darwin_universal() -> FileInfo {
+    FileInfo {
+        url: format!("https://github.com/catboost/catboost/releases/download/v{CATBOOST_VERSION}/libcatboostmodel-darwin-universal2-{CATBOOST_VERSION}.dylib"),
+        checksum: "1b95b7a4523696f6dcf6fd4c009a86014a7cbb42e031912706be2020de111e67",
+    }
+}
+fn lib_windows_dll() -> FileInfo {
+    FileInfo {
+        url: format!("https://github.com/catboost/catboost/releases/download/v{CATBOOST_VERSION}/catboostmodel-windows-x86_64-{CATBOOST_VERSION}.dll"),
+        checksum: "835e1f8b885ca7f7dd1e9ef657b04d33a32ad54dd14d0d81d50e91b2c4d75bcc",
+    }
+}
+fn lib_windows_lib() -> FileInfo {
+    FileInfo {
+        url: format!("https://github.com/catboost/catboost/releases/download/v{CATBOOST_VERSION}/catboostmodel-windows-x86_64-{CATBOOST_VERSION}.lib"),
+        checksum: "d37e0c453980f572a7e05fabd4664bcc5f6cc575259f905bf3e4e1070c4edc7b",
+    }
 }
 
 fn get_platform_info() -> (String, String) {
@@ -28,8 +71,6 @@ fn get_platform_info() -> (String, String) {
         "x86_64"
     } else if target.contains("aarch64") || target.contains("arm64") {
         "aarch64"
-    } else if target.contains("i686") || target.contains("i586") {
-        "i686"
     } else {
         panic!("Unsupported architecture for target: {}", target);
     };
@@ -37,221 +78,115 @@ fn get_platform_info() -> (String, String) {
     (os.to_string(), arch.to_string())
 }
 
-fn download_model_interface_headers(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let version = get_catboost_version();
-
-    // Create the model_interface directory
-    let model_interface_dir = out_dir.join("libs/model_interface");
-    fs::create_dir_all(&model_interface_dir)?;
-
-    // Download the c_api.h file
-    let c_api_url = format!(
-        "https://raw.githubusercontent.com/catboost/catboost/v{}/catboost/libs/model_interface/c_api.h",
-        version
+fn download_and_verify(
+    file_info: &FileInfo,
+    destination_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "cargo:warning=Downloading {} to {}",
+        &file_info.url,
+        destination_path.display()
     );
 
-    println!("cargo:warning=Downloading c_api.h from: {}", c_api_url);
-
-    let response = ureq::get(&c_api_url).call()?;
+    let response = ureq::get(&file_info.url).call()?;
     let status = response.status();
     if !(200..300).contains(&status) {
-        return Err(format!("Failed to download c_api.h: HTTP {}", status).into());
+        return Err(format!("Download failed: HTTP {}", status).into());
+    }
+    let mut bytes = Vec::new();
+    response.into_reader().read_to_end(&mut bytes)?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let hash = hasher.finalize();
+    let hex_hash = format!("{:x}", hash);
+
+    if hex_hash != file_info.checksum {
+        return Err(format!(
+            "Checksum mismatch for {}. Expected: {}, Got: {}",
+            file_info.url, file_info.checksum, hex_hash
+        )
+        .into());
     }
 
-    let c_api_path = model_interface_dir.join("c_api.h");
-    let mut file = fs::File::create(&c_api_path)?;
-    io::copy(&mut response.into_reader(), &mut file)?;
+    fs::write(destination_path, &bytes)?;
+    println!(
+        "cargo:warning=Successfully downloaded and verified {}",
+        destination_path.display()
+    );
 
     Ok(())
 }
 
+fn download_model_interface_headers(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let model_interface_dir = out_dir.join("libs/model_interface");
+    fs::create_dir_all(&model_interface_dir)?;
+    let c_api_path = model_interface_dir.join("c_api.h");
+    download_and_verify(&c_api_header(), &c_api_path)
+}
+
 fn download_compiled_library(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let (os, arch) = get_platform_info();
-    let version = get_catboost_version();
-
-    // Create the library directory early
     let lib_dir = out_dir.join("libs");
     fs::create_dir_all(&lib_dir)?;
 
-    // Parse version to determine URL format
-    // v1.0.x - v1.1.x use simple filenames
-    // v1.2+ use platform-specific versioned filenames
-    let version_parts: Vec<&str> = version.split('.').collect();
-    let major: u32 = version_parts
-        .first()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1);
-    let minor: u32 = version_parts
-        .get(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-
-    let use_new_format = major > 1 || (major == 1 && minor >= 2);
-
-    // Determine download URL based on version and platform
-    let (lib_filename, download_url) = if use_new_format {
-        // v1.2+ format with platform and version in filename
-        match (os.as_str(), arch.as_str()) {
-            ("linux", "x86_64") => (
-                "libcatboostmodel.so".to_string(),
-                format!(
-                    "https://github.com/catboost/catboost/releases/download/v{}/libcatboostmodel-linux-x86_64-{}.so",
-                    version, version
-                ),
-            ),
-            ("linux", "aarch64") => (
-                "libcatboostmodel.so".to_string(),
-                format!(
-                    "https://github.com/catboost/catboost/releases/download/v{}/libcatboostmodel-linux-aarch64-{}.so",
-                    version, version
-                ),
-            ),
-            ("darwin", "x86_64") | ("darwin", "aarch64") => (
-                "libcatboostmodel.dylib".to_string(),
-                format!(
-                    "https://github.com/catboost/catboost/releases/download/v{}/libcatboostmodel-darwin-universal2-{}.dylib",
-                    version, version
-                ),
-            ),
-            ("windows", "x86_64") => {
-                // On Windows, we need to download both the DLL and LIB files
-                // First download the DLL
-                let dll_url = format!(
-                    "https://github.com/catboost/catboost/releases/download/v{}/catboostmodel-windows-x86_64-{}.dll",
-                    version, version
-                );
-                println!("cargo:warning=Downloading Windows DLL from: {}", dll_url);
-                let dll_response = ureq::get(&dll_url).call()?;
-                if !(200..300).contains(&dll_response.status()) {
-                    return Err(
-                        format!("Failed to download DLL: HTTP {}", dll_response.status()).into(),
-                    );
-                }
-                let dll_path = lib_dir.join("catboostmodel.dll");
-                let mut dll_file = fs::File::create(&dll_path)?;
-                io::copy(&mut dll_response.into_reader(), &mut dll_file)?;
-
-                // Then download the LIB file
-                let lib_url = format!(
-                    "https://github.com/catboost/catboost/releases/download/v{}/catboostmodel-windows-x86_64-{}.lib",
-                    version, version
-                );
-                println!("cargo:warning=Downloading Windows LIB from: {}", lib_url);
-                let lib_response = ureq::get(&lib_url).call()?;
-                if !(200..300).contains(&lib_response.status()) {
-                    return Err(
-                        format!("Failed to download LIB: HTTP {}", lib_response.status()).into(),
-                    );
-                }
-                let lib_path = lib_dir.join("catboostmodel.lib");
-                let mut lib_file = fs::File::create(&lib_path)?;
-                io::copy(&mut lib_response.into_reader(), &mut lib_file)?;
-
-                // Return early for Windows since we've already downloaded both files
-                println!(
-                    "cargo:warning=Downloaded CatBoost library to: {}",
-                    dll_path.display()
-                );
-                return Ok(());
-            }
-            ("windows", "aarch64") => (
-                "catboostmodel.dll".to_string(),
-                format!(
-                    "https://github.com/catboost/catboost/releases/download/v{}/catboostmodel-windows-aarch64-{}.dll",
-                    version, version
-                ),
-            ),
-            _ => return Err(format!("Unsupported platform: {}-{}", os, arch).into()),
+    match (os.as_str(), arch.as_str()) {
+        ("linux", "x86_64") => download_and_verify(&lib_linux_x86_64(), &lib_dir.join("libcatboostmodel.so")),
+        ("linux", "aarch64") => download_and_verify(&lib_linux_aarch64(), &lib_dir.join("libcatboostmodel.so")),
+        ("darwin", "x86_64") | ("darwin", "aarch64") => download_and_verify(&lib_darwin_universal(), &lib_dir.join("libcatboostmodel.dylib")),
+        ("windows", "x86_64") => {
+            download_and_verify(&lib_windows_dll(), &lib_dir.join("catboostmodel.dll"))?;
+            download_and_verify(&lib_windows_lib(), &lib_dir.join("catboostmodel.lib"))
         }
-    } else {
-        // v1.0.x - v1.1.x format with simple filenames
-        match os.as_str() {
-            "linux" => (
-                "libcatboostmodel.so".to_string(),
-                format!(
-                    "https://github.com/catboost/catboost/releases/download/v{}/libcatboostmodel.so",
-                    version
-                ),
-            ),
-            "darwin" => (
-                "libcatboostmodel.dylib".to_string(),
-                format!(
-                    "https://github.com/catboost/catboost/releases/download/v{}/libcatboostmodel.dylib",
-                    version
-                ),
-            ),
-            "windows" => {
-                // On Windows, we need to download both the DLL and LIB files
-                // First download the DLL
-                let dll_url = format!(
-                    "https://github.com/catboost/catboost/releases/download/v{}/catboostmodel.dll",
-                    version
-                );
-                println!("cargo:warning=Downloading Windows DLL from: {}", dll_url);
-                let dll_response = ureq::get(&dll_url).call()?;
-                if !(200..300).contains(&dll_response.status()) {
-                    return Err(
-                        format!("Failed to download DLL: HTTP {}", dll_response.status()).into(),
-                    );
-                }
-                let dll_path = lib_dir.join("catboostmodel.dll");
-                let mut dll_file = fs::File::create(&dll_path)?;
-                io::copy(&mut dll_response.into_reader(), &mut dll_file)?;
-
-                // Then download the LIB file
-                let lib_url = format!(
-                    "https://github.com/catboost/catboost/releases/download/v{}/catboostmodel.lib",
-                    version
-                );
-                println!("cargo:warning=Downloading Windows LIB from: {}", lib_url);
-                let lib_response = ureq::get(&lib_url).call()?;
-                if !(200..300).contains(&lib_response.status()) {
-                    return Err(
-                        format!("Failed to download LIB: HTTP {}", lib_response.status()).into(),
-                    );
-                }
-                let lib_path = lib_dir.join("catboostmodel.lib");
-                let mut lib_file = fs::File::create(&lib_path)?;
-                io::copy(&mut lib_response.into_reader(), &mut lib_file)?;
-
-                // Return early for Windows since we've already downloaded both files
-                println!(
-                    "cargo:warning=Downloaded CatBoost library to: {}",
-                    dll_path.display()
-                );
-                return Ok(());
-            }
-            _ => return Err(format!("Unsupported platform: {}", os).into()),
-        }
-    };
-
-    println!(
-        "cargo:warning=Downloading CatBoost v{} library from: {}",
-        version, download_url
-    );
-
-    // Download the library directly into the `libs` directory with its correct name
-    let lib_path = lib_dir.join(&lib_filename);
-    let mut dest = fs::File::create(&lib_path)?;
-
-    let response = ureq::get(&download_url).call()?;
-    let status = response.status();
-    if !(200..300).contains(&status) {
-        return Err(format!("Failed to download library: HTTP {}", status).into());
+        _ => Err(format!("Unsupported platform: {}-{}", os, arch).into()),
     }
+}
 
-    // SIMPLIFIED: No need for extraction, just copy the downloaded content
-    io::copy(&mut response.into_reader(), &mut dest)?;
+fn run_checksum_updater() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:warning=-----------------------------------------------------------------");
+    println!("cargo:warning=CATBOOST_UPDATE_CHECKSUMS mode enabled.");
+    println!("cargo:warning=Downloading files for ALL platforms and printing checksums.");
+    println!("cargo:warning=-----------------------------------------------------------------");
 
-    println!(
-        "cargo:warning=Downloaded CatBoost library to: {}",
-        lib_path.display()
-    );
+    let files_to_check = vec![
+        c_api_header(),
+        lib_linux_x86_64(),
+        lib_linux_aarch64(),
+        lib_darwin_universal(),
+        lib_windows_dll(),
+        lib_windows_lib(),
+    ];
+
+    for file_info in &files_to_check {
+        println!("cargo:warning=Downloading {}...", &file_info.url);
+        let response = ureq::get(&file_info.url).call()?;
+        let mut bytes = Vec::new();
+        response.into_reader().read_to_end(&mut bytes)?;
+
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let hash = hasher.finalize();
+        let hex_hash = format!("{:x}", hash);
+
+        println!("cargo:warning=URL:      {}", file_info.url);
+        println!("cargo:warning=Checksum: {}", hex_hash);
+        println!("cargo:warning=-----------------------------------------------------------------");
+    }
 
     Ok(())
 }
 
 fn main() {
+    // Check if the user wants to update checksums instead of building.
+    if env::var("CATBOOST_UPDATE_CHECKSUMS").is_ok() {
+        if let Err(e) = run_checksum_updater() {
+            panic!("Failed to run checksum updater: {}", e);
+        }
+        // We panic here to stop the build process cleanly after printing the checksums.
+        // This is the intended behavior for this utility mode.
+        panic!("Checksum update process finished. Please update the checksums in build.rs and re-run the build without CATBOOST_UPDATE_CHECKSUMS set.");
+    }
+
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let cb_model_interface_root = out_dir.join("libs/model_interface");
 
@@ -260,39 +195,12 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(catboost_text_count)");
     println!("cargo::rustc-check-cfg=cfg(catboost_staged_prediction)");
     println!("cargo::rustc-check-cfg=cfg(catboost_feature_indices)");
-
-    // Parse version for feature detection
-    let version = get_catboost_version();
-    let version_parts: Vec<&str> = version.split('.').collect();
-    let major: u32 = version_parts
-        .first()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1);
-    let minor: u32 = version_parts
-        .get(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let patch: u32 = version_parts
-        .get(2)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-
-    // Emit cfg flags for version-specific features
-    // v1.1.1+: Embedding features support
-    if major > 1 || (major == 1 && minor > 1) || (major == 1 && minor == 1 && patch >= 1) {
-        println!("cargo:rustc-cfg=catboost_embeddings");
-    }
-
-    // v1.2+: Text features count function
-    if major > 1 || (major == 1 && minor >= 2) {
-        println!("cargo:rustc-cfg=catboost_text_count");
-    }
-
-    // v1.2.3+: Staged predictions and feature indices
-    if major > 1 || (major == 1 && minor > 2) || (major == 1 && minor == 2 && patch >= 3) {
-        println!("cargo:rustc-cfg=catboost_staged_prediction");
-        println!("cargo:rustc-cfg=catboost_feature_indices");
-    }
+    println!("cargo:rustc-cfg=catboost_embeddings");
+    println!("cargo:rustc-cfg=catboost_text_count");
+    println!("cargo:rustc-cfg=catboost_staged_prediction");
+    println!("cargo:rustc-cfg=catboost_feature_indices");
+    println!("cargo:rustc-cfg=catboost_embeddings");
+    println!("cargo:rustc-cfg=catboost_text_count");
 
     // Download the model interface headers
     if let Err(e) = download_model_interface_headers(&out_dir) {
