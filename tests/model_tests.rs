@@ -24,7 +24,11 @@ fn test_get_model_metadata() -> Result<(), CatBoostError> {
     let model = Model::load_buffer(TEST_MODEL_BYTES)?;
     assert_eq!(model.get_dimensions_count(), 1);
     assert_eq!(model.get_tree_count(), 1000);
-    assert_eq!(model.get_float_features_count(), 3, "Incorrect float feature count");
+    assert_eq!(
+        model.get_float_features_count(),
+        3,
+        "Incorrect float feature count"
+    );
     assert_eq!(model.get_cat_features_count(), 1);
     Ok(())
 }
@@ -38,7 +42,11 @@ fn test_predict_float_only() -> Result<(), CatBoostError> {
 
     let predictions = model.calc_model_prediction(float_features, cat_features)?;
     assert_eq!(predictions.len(), 1);
-    assert!((predictions[0] - 0.3184967798337403).abs() < 1e-9, "Prediction value was: {}", predictions[0]);
+    assert!(
+        (predictions[0] - 0.3184967798337403).abs() < 1e-9,
+        "Prediction value was: {}",
+        predictions[0]
+    );
     Ok(())
 }
 
@@ -51,7 +59,11 @@ fn test_predict_float_and_cat() -> Result<(), CatBoostError> {
 
     let predictions = model.calc_model_prediction(float_features, cat_features)?;
     assert_eq!(predictions.len(), 1);
-    assert!((predictions[0] - 0.3184967798337403).abs() < 1e-9, "Prediction value was: {}", predictions[0]);
+    assert!(
+        (predictions[0] - 0.3184967798337403).abs() < 1e-9,
+        "Prediction value was: {}",
+        predictions[0]
+    );
     Ok(())
 }
 
@@ -59,10 +71,7 @@ fn test_predict_float_and_cat() -> Result<(), CatBoostError> {
 fn test_predict_batch() -> Result<(), CatBoostError> {
     let model = Model::load_buffer(TEST_MODEL_BYTES)?;
 
-    let float_features = vec![
-        vec![1.0, 2.0, 3.0],
-        vec![5.0, 4.0, 3.0],
-    ];
+    let float_features = vec![vec![1.0, 2.0, 3.0], vec![5.0, 4.0, 3.0]];
     let cat_features = vec![
         vec!["a".to_string()], // This will be hashed
         vec!["d".to_string()],
@@ -70,8 +79,16 @@ fn test_predict_batch() -> Result<(), CatBoostError> {
 
     let predictions = model.calc_model_prediction(float_features, cat_features)?;
     assert_eq!(predictions.len(), 2);
-    assert!((predictions[0] - 0.3184967798337403).abs() < 1e-9, "Prediction value for first item was: {}", predictions[0]);
-    assert!((predictions[1] - 0.3184967798337403).abs() < 1e-9, "Prediction value for second item was: {}", predictions[1]);
+    assert!(
+        (predictions[0] - 0.3184967798337403).abs() < 1e-9,
+        "Prediction value for first item was: {}",
+        predictions[0]
+    );
+    assert!(
+        (predictions[1] - 0.3184967798337403).abs() < 1e-9,
+        "Prediction value for second item was: {}",
+        predictions[1]
+    );
     Ok(())
 }
 
@@ -85,7 +102,11 @@ fn test_predict_with_objects_order_features() -> Result<(), CatBoostError> {
 
     let predictions = model.predict(features)?;
     assert_eq!(predictions.len(), 1);
-    assert!((predictions[0] - 0.3184967798337403).abs() < 1e-9, "Prediction value was: {}", predictions[0]);
+    assert!(
+        (predictions[0] - 0.3184967798337403).abs() < 1e-9,
+        "Prediction value was: {}",
+        predictions[0]
+    );
     Ok(())
 }
 
@@ -100,7 +121,11 @@ fn test_predict_with_incorrect_float_feature_count() {
     let result = model.calc_model_prediction(float_features, cat_features);
     assert!(result.is_err());
     let error = result.unwrap_err();
-    assert!(error.description.contains("insufficient float features vector size"));
+    assert!(
+        error
+            .description
+            .contains("insufficient float features vector size")
+    );
 }
 
 #[test]
@@ -123,7 +148,12 @@ fn test_get_feature_names() -> Result<(), CatBoostError> {
     // Note: The dummy model does not contain feature names.
     // This test just ensures the functions can be called without error
     // and return the correct feature names for this specific model.
-    let expected_names: Vec<String> = vec!["0".to_string(), "1".to_string(), "wind direction".to_string(), "3".to_string()];
+    let expected_names: Vec<String> = vec![
+        "0".to_string(),
+        "1".to_string(),
+        "wind direction".to_string(),
+        "3".to_string(),
+    ];
     assert_eq!(model.get_feature_names()?, expected_names);
 
     let expected_float_names: Vec<String> = vec!["0".to_string(), "1".to_string(), "3".to_string()];

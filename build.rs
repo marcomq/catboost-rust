@@ -12,42 +12,54 @@ struct FileInfo {
     checksum: &'static str,
 }
 
-// Query all checksums for all platforms by running CATBOOST_UPDATE_CHECKSUMS=1 cargo build   
+// Query all checksums for all platforms by running CATBOOST_UPDATE_CHECKSUMS=1 cargo build
 
 fn c_api_header() -> FileInfo {
     FileInfo {
-        url: format!("https://raw.githubusercontent.com/catboost/catboost/v{CATBOOST_VERSION}/catboost/libs/model_interface/c_api.h"),
+        url: format!(
+            "https://raw.githubusercontent.com/catboost/catboost/v{CATBOOST_VERSION}/catboost/libs/model_interface/c_api.h"
+        ),
         checksum: "ecc734868dcd485e2fa7434287ad1fe418a7e3be606ff16ce46a403fb0a7912a", // Verified for v1.2.8
     }
 }
 
 fn lib_linux_x86_64() -> FileInfo {
     FileInfo {
-        url: format!("https://github.com/catboost/catboost/releases/download/v{CATBOOST_VERSION}/libcatboostmodel-linux-x86_64-{CATBOOST_VERSION}.so"),
+        url: format!(
+            "https://github.com/catboost/catboost/releases/download/v{CATBOOST_VERSION}/libcatboostmodel-linux-x86_64-{CATBOOST_VERSION}.so"
+        ),
         checksum: "5a0de49d0bc81e460fd983da0f0f9d819e804b4ae19c6c9451b31e4f57d06545",
     }
 }
 fn lib_linux_aarch64() -> FileInfo {
     FileInfo {
-        url: format!("https://github.com/catboost/catboost/releases/download/v{CATBOOST_VERSION}/libcatboostmodel-linux-aarch64-{CATBOOST_VERSION}.so"),
+        url: format!(
+            "https://github.com/catboost/catboost/releases/download/v{CATBOOST_VERSION}/libcatboostmodel-linux-aarch64-{CATBOOST_VERSION}.so"
+        ),
         checksum: "0f5f55286b805c30b719bd52fdf661dc94a694207ae1914facbd5018e09349f3",
     }
 }
 fn lib_darwin_universal() -> FileInfo {
     FileInfo {
-        url: format!("https://github.com/catboost/catboost/releases/download/v{CATBOOST_VERSION}/libcatboostmodel-darwin-universal2-{CATBOOST_VERSION}.dylib"),
+        url: format!(
+            "https://github.com/catboost/catboost/releases/download/v{CATBOOST_VERSION}/libcatboostmodel-darwin-universal2-{CATBOOST_VERSION}.dylib"
+        ),
         checksum: "1b95b7a4523696f6dcf6fd4c009a86014a7cbb42e031912706be2020de111e67",
     }
 }
 fn lib_windows_dll() -> FileInfo {
     FileInfo {
-        url: format!("https://github.com/catboost/catboost/releases/download/v{CATBOOST_VERSION}/catboostmodel-windows-x86_64-{CATBOOST_VERSION}.dll"),
+        url: format!(
+            "https://github.com/catboost/catboost/releases/download/v{CATBOOST_VERSION}/catboostmodel-windows-x86_64-{CATBOOST_VERSION}.dll"
+        ),
         checksum: "835e1f8b885ca7f7dd1e9ef657b04d33a32ad54dd14d0d81d50e91b2c4d75bcc",
     }
 }
 fn lib_windows_lib() -> FileInfo {
     FileInfo {
-        url: format!("https://github.com/catboost/catboost/releases/download/v{CATBOOST_VERSION}/catboostmodel-windows-x86_64-{CATBOOST_VERSION}.lib"),
+        url: format!(
+            "https://github.com/catboost/catboost/releases/download/v{CATBOOST_VERSION}/catboostmodel-windows-x86_64-{CATBOOST_VERSION}.lib"
+        ),
         checksum: "d37e0c453980f572a7e05fabd4664bcc5f6cc575259f905bf3e4e1070c4edc7b",
     }
 }
@@ -140,7 +152,9 @@ fn fetch_file_to_cache(
     file_info: &FileInfo,
     cache_dir: &Path,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let filename = Path::new(&file_info.url).file_name().ok_or("Could not get filename from URL")?;
+    let filename = Path::new(&file_info.url)
+        .file_name()
+        .ok_or("Could not get filename from URL")?;
     let cached_path = cache_dir.join(filename);
 
     if cached_path.exists() {
@@ -240,7 +254,9 @@ fn main() {
         }
         // We panic here to stop the build process cleanly after printing the checksums.
         // This is the intended behavior for this utility mode.
-        panic!("Checksum update process finished. Please update the checksums in build.rs and re-run the build without CATBOOST_UPDATE_CHECKSUMS set.");
+        panic!(
+            "Checksum update process finished. Please update the checksums in build.rs and re-run the build without CATBOOST_UPDATE_CHECKSUMS set."
+        );
     }
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
